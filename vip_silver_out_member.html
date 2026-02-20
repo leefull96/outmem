@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>외부 인원 데이터 관리</title>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+        .section { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; }
+        
+        textarea { width: 100%; height: 100px; margin-bottom: 10px; padding: 10px; box-sizing: border-box; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 10px; }
+        .input-group input { flex: 1; padding: 8px; }
+        
+        button { padding: 8px 15px; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .add-btn { background-color: #4CAF50; }
+        .add-btn:hover { background-color: #45a049; }
+        
+        /* 버튼 정렬을 위한 컨테이너 스타일 */
+        .table-header-container { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+        .table-title { margin: 0; }
+        .button-group { display: flex; justify-content: flex-end; gap: 10px; }
+        
+        .save-btn { background-color: #008CBA; }
+        .save-btn:hover { background-color: #007bb5; }
+        .bulk-delete-btn { background-color: #ff9800; }
+        .bulk-delete-btn:hover { background-color: #e68a00; }
+        .remove-dup-btn { background-color: #9c27b0; }
+        .remove-dup-btn:hover { background-color: #7b1fa2; }
+        .delete-btn { background-color: #f44336; padding: 4px 8px; font-size: 12px; border-radius: 3px; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; background-color: white; }
+        th, td { border: 1px solid #ccc; padding: 10px; text-align: center; }
+        th { background-color: #333; color: white; font-weight: bold; }
+        td.editable { cursor: pointer; }
+        td.editable:hover { background-color: #f1f1f1; }
+        td input[type="text"] { width: 90%; padding: 5px; text-align: center; }
+        td input[type="checkbox"] { transform: scale(1.2); cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <h2>👥 회원 데이터 관리 (outmem)</h2>
+
+    <div class="section">
+        <h3>일괄 데이터 입력</h3>
+        <textarea id="bulkInput" placeholder="복사한 데이터를 붙여넣으세요. (예: 권일봉 01076689073 이전은)"></textarea>
+        <button id="addBulkBtn" class="add-btn">일괄 추가하기</button>
+    </div>
+
+    <div class="section">
+        <h3>개별 행 추가</h3>
+        <div class="input-group">
+            <input type="text" id="nameInput" placeholder="회원명">
+            <input type="text" id="phoneInput" placeholder="전화번호">
+            <input type="text" id="managerInput" placeholder="담당자">
+        </div>
+        <button id="addSingleBtn" class="add-btn">개별 추가하기</button>
+    </div>
+
+    <div class="section" style="background-color: transparent; border: none; padding: 0;">
+        <div class="table-header-container">
+            <h3 class="table-title">데이터 표 (더블 클릭하여 수정)</h3>
+            <div class="button-group">
+                <button id="removeDuplicatesBtn" class="remove-dup-btn">🧹 중복 목록 제거</button>
+                <button id="deleteSelectedBtn" class="bulk-delete-btn">🗑️ 선택 항목 삭제</button>
+                <button id="saveFirebaseBtn" class="save-btn">💾 Firebase에 표 전체 저장</button>
+            </div>
+        </div>
+        
+        <table id="dataTable">
+            <thead>
+                <tr>
+                    <th style="width: 40px;">선택</th>
+                    <th>회원명</th>
+                    <th>전화번호</th>
+                    <th>담당자</th>
+                    <th>관리</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                </tbody>
+        </table>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
+        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDMu3NnCwJlkAoCmouYu92cP4Rha4SPFKo",
+            authDomain: "fuinv-f980f.firebaseapp.com",
+            projectId: "fuinv-f980f",
+            storageBucket: "fuinv-f980f.firebasestorage.app",
+            messagingSenderId: "400376860655",
+            appId: "1:400376860655:web:ec0343d8eeef707893f01a"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const docRef = doc(db, "outmem", "mainData");
+        const tableBody = document.getElementById('tableBody');
+
+        let lastCheckedBox = null;
+
+        // 셀 안의 텍스트를 안전하게 가져오는 함수 (수정 중일 때 대비)
+        function getCellText(cell) {
+            const input = cell.querySelector('input[type="text"]');
+            return input ? input.value.trim() : cell.innerText.trim();
+        }
+
+        // 1. 초기 데이터 불러오기
+        async function loadData() {
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const data = docSnap.data().list || [];
+                    data.forEach(item => addRowToTable(item.name, item.phone, item.manager));
+                }
+            } catch (e) {
+                console.error("데이터 불러오기 실패:", e);
+            }
+        }
+
+        // 2. 표에 행 추가
+        function addRowToTable(name, phone, manager) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><input type="checkbox" class="row-checkbox"></td>
+                <td class="editable">${name}</td>
+                <td class="editable">${phone}</td>
+                <td class="editable">${manager}</td>
+                <td><button class="delete-btn">삭제</button></td>
+            `;
+
+            // 인라인 수정
+            const cells = tr.querySelectorAll('.editable');
+            cells.forEach(cell => {
+                cell.addEventListener('dblclick', function() {
+                    if (this.querySelector('input')) return; 
+                    const currentText = this.innerText;
+                    this.innerHTML = `<input type="text" value="${currentText}">`;
+                    const input = this.querySelector('input');
+                    input.focus();
+
+                    input.addEventListener('blur', finishEdit);
+                    input.addEventListener('keypress', function(e) {
+                        if (e.key === 'Enter') finishEdit.call(this);
+                    });
+
+                    function finishEdit() {
+                        const newText = this.value;
+                        cell.innerText = newText.trim() === '' ? currentText : newText;
+                    }
+                });
+            });
+
+            // 개별 삭제
+            tr.querySelector('.delete-btn').addEventListener('click', function() {
+                tr.remove();
+            });
+
+            tableBody.appendChild(tr);
+        }
+
+        // 3. 일괄 추가 (누락 알림 포함)
+        document.getElementById('addBulkBtn').addEventListener('click', () => {
+            const text = document.getElementById('bulkInput').value.trim();
+            if (!text) return alert("데이터를 입력하세요.");
+
+            const lines = text.split('\n');
+            const errorMessages = [];
+            
+            lines.forEach((line, index) => {
+                const trimmedLine = line.trim();
+                if (!trimmedLine) return; 
+
+                const parts = trimmedLine.split(/\s+/);
+                
+                if (parts.length >= 3) {
+                    addRowToTable(parts[0], parts[1], parts[2]);
+                } else {
+                    let missingInfo = "";
+                    if (parts.length === 1) {
+                        missingInfo = "전화번호, 담당자 누락";
+                    } else if (parts.length === 2) {
+                        missingInfo = "담당자 (또는 전화번호) 누락";
+                    }
+                    errorMessages.push(`[${index + 1}번째 줄] "${trimmedLine}" -> ${missingInfo}`);
+                }
+            });
+
+            document.getElementById('bulkInput').value = ''; 
+
+            if (errorMessages.length > 0) {
+                alert("⚠️ 다음 행들은 입력값이 부족하여 제외되었습니다:\n\n" + errorMessages.join("\n"));
+            }
+        });
+
+        // 4. 개별 추가
+        document.getElementById('addSingleBtn').addEventListener('click', () => {
+            const name = document.getElementById('nameInput').value.trim();
+            const phone = document.getElementById('phoneInput').value.trim();
+            const manager = document.getElementById('managerInput').value.trim();
+
+            if (!name || !phone || !manager) return alert("모든 항목을 입력하세요.");
+
+            addRowToTable(name, phone, manager);
+            
+            document.getElementById('nameInput').value = '';
+            document.getElementById('phoneInput').value = '';
+            document.getElementById('managerInput').value = '';
+        });
+
+        // 5. 중복 목록 제거 (새 기능)
+        document.getElementById('removeDuplicatesBtn').addEventListener('click', () => {
+            const rows = Array.from(tableBody.querySelectorAll('tr'));
+            const seen = new Set();
+            const rowsToRemove = [];
+
+            // 위에서부터 한 줄씩 검사
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('td.editable');
+                if (cells.length >= 2) {
+                    const name = getCellText(cells[0]);
+                    const phone = getCellText(cells[1]);
+                    // 이름과 전화번호를 합친 고유 키 생성 (예: "홍길동|01012345678")
+                    const uniqueKey = name + '|' + phone;
+
+                    if (seen.has(uniqueKey)) {
+                        // 이미 본 적이 있는 조합이면 삭제 대기열에 추가
+                        rowsToRemove.push(row);
+                    } else {
+                        // 처음 보는 조합이면 기록
+                        seen.add(uniqueKey);
+                    }
+                }
+            });
+
+            if (rowsToRemove.length === 0) {
+                return alert("중복된 데이터가 없습니다.");
+            }
+
+            // 확인(예) / 취소(아니오) 팝업창
+            const isConfirm = confirm(`이름과 전화번호가 모두 동일한 중복 데이터가 ${rowsToRemove.length}개 발견되었습니다.\n상단에 있는 1개만 남기고 나머지 중복값은 삭제하시겠습니까?`);
+            
+            if (isConfirm) {
+                rowsToRemove.forEach(row => row.remove());
+                lastCheckedBox = null; // 다중 선택 꼬임 방지
+                alert("중복 데이터가 제거되었습니다.");
+            }
+        });
+
+        // 6. Shift+Click 다중 선택 이벤트
+        tableBody.addEventListener('click', function(e) {
+            if (e.target && e.target.classList.contains('row-checkbox')) {
+                const checkboxes = Array.from(tableBody.querySelectorAll('.row-checkbox'));
+                
+                if (e.shiftKey && lastCheckedBox) {
+                    const start = checkboxes.indexOf(lastCheckedBox);
+                    const end = checkboxes.indexOf(e.target);
+                    const min = Math.min(start, end);
+                    const max = Math.max(start, end);
+                    
+                    for (let i = min; i <= max; i++) {
+                        checkboxes[i].checked = e.target.checked;
+                    }
+                }
+                lastCheckedBox = e.target;
+            }
+        });
+
+        // 7. 선택 항목 다중 삭제
+        document.getElementById('deleteSelectedBtn').addEventListener('click', () => {
+            const checkedBoxes = tableBody.querySelectorAll('.row-checkbox:checked');
+            if (checkedBoxes.length === 0) {
+                return alert("삭제할 항목을 먼저 선택해주세요.");
+            }
+
+            if (confirm(`선택한 ${checkedBoxes.length}개의 행을 삭제하시겠습니까?`)) {
+                checkedBoxes.forEach(box => {
+                    box.closest('tr').remove();
+                });
+                lastCheckedBox = null; 
+            }
+        });
+
+        // 8. Firebase 저장
+        document.getElementById('saveFirebaseBtn').addEventListener('click', async () => {
+            const rows = tableBody.querySelectorAll('tr');
+            const dataToSave = [];
+
+            rows.forEach(row => {
+                const cells = row.querySelectorAll('td.editable');
+                dataToSave.push({
+                    name: getCellText(cells[0]),
+                    phone: getCellText(cells[1]),
+                    manager: getCellText(cells[2])
+                });
+            });
+
+            try {
+                await setDoc(docRef, { list: dataToSave });
+                alert('Firebase에 성공적으로 저장되었습니다!');
+            } catch (e) {
+                console.error("저장 실패:", e);
+                alert('저장에 실패했습니다. 콘솔을 확인하세요.');
+            }
+        });
+
+        loadData();
+    </script>
+</body>
+</html>
